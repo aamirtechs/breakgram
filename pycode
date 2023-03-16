@@ -1,0 +1,154 @@
+import telegram
+from telegram.ext import CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# Define some global variables
+break_queue = []
+employees_on_break = []
+
+# Define the Google Sheets API credentials
+creds = service_account.Credentials.from_service_account_file('creds.json')
+service = build('sheets', 'v4', credentials=creds)
+sheet_id = 'YOUR_SHEET_ID_HERE'
+
+# Define the Telegram bot token
+bot_token = 'YOUR_BOT_TOKEN_HERE'
+
+# Define the Telegram bot object
+bot = telegram.Bot(token=bot_token)
+
+# Define a function to read the list of employees on break from the Google Sheet
+def read_employees_on_break():
+    sheet = service.spreadsheets()
+    result = sheet.values().get(spreadsheetId=sheet_id, range='EmployeesOnBreak').execute()
+    values = result.get('values', [])
+    if not values:
+        return []
+    return [int(v[0]) for v in values]
+
+# Define a function to write the list of employees on break to the Google Sheet
+def write_employees_on_break():
+    sheet = service.spreadsheets()
+    values = [[str(e)] for e in employees_on_break]
+    body = {'values': values}
+    sheet.values().update(spreadsheetId=sheet_id, range='EmployeesOnBreak', valueInputOption='RAW', body=body).execute()
+
+# Define a handler for the /start command
+def start_handler(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Welcome to the employee break bot! Use /break to start a break.")
+
+# Define a handler for the /break command
+def break_handler(update, context):
+    user_id = update.effective_user.id
+    
+    # Check if the user is already on break
+    if user_id in employees_on_break:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="You are already on break!")
+        return
+    
+    # Check if there are already 2 employees on break
+    if len(employees_on_break) >= 2:
+        # Add the user to the break queue
+        break_queue.append(user_id)
+        
+        # Send a message to the user telling them they are in the queue
+        context.bot.send_message(chat_id=update.effective_chat.id, text="You are in the break queue. You will be notified when it's your turn.")
+        
+        # Send a message to the chat telling them someone is in the queue
+        context.bot.send_message(chat_id=update.effective_chat.id, text="There are currently " + str(len(break_queue)) + " people in the break queue.")
+        
+        return
+    
+    # Add the user to the list of employees on break
+    employees_on_break.append(user_id)
+    
+    # Write the updated list of employees on break to the Google Sheet
+    write_employees_on_break()
+    
+    # Send a message to the user telling them they can take a break
+    context.bot.send_message(chat_id=update.effective_chat
+        text="You can take your break now. Please use /resume when you are done.")
+        
+    # Write the updated list of employees on break to the Google Sheet
+    write_employees_on_break()
+    
+# Define a handler for the /resume command
+def resume_handler(update, context):
+    user_id = update.effective_user.id
+    
+    # Check if the user is on break
+    if user_id not in employees_on_break:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="You are not on break!")
+        return
+    
+    # Remove the user from the list of employees on break
+    employees_on_break.remove(user_id)
+    
+    # Write the updated list of employees on break to the Google Sheet
+    write_employees_on_break()
+    
+    # Send a message to the user telling them they have resumed work
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Welcome back! Use /break to start another break if you need one.")
+    
+    # Check if there are any employees in the break queue
+    if len(break_queue) > 0:
+        # Get the next user from the break queue
+        next_user_id = break_queue.pop(0)
+        
+        # Add the next user to the list of employees on break
+        employees_on_break.append(next_user_id)
+        
+        # Write the updated list of employees on break to the Google Sheet
+        write_employees_on_break()
+        
+        # Send a message to the next user telling them they can take a break
+        context.bot.send_message(chat_id=next_user_id, text="You can take your break now. Please use /resume when you are done.")
+        
+        # Send a message to the chat telling them someone is on break
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Employee " + str(next_user_id) + " is now on break.")
+    
+# Define a handler for unrecognized commands
+def unknown_handler(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, I didn't understand that command.")
+
+# Define a handler for inline button clicks
+def button_handler(update, context):
+    query = update.callback_query
+    query.answer()
+    query.edit_message_text(text="Button clicked!")
+    
+# Define the main function to run the bot
+def main():
+    # Create an updater object
+    updater = Updater(token=bot_token, use_context=True)
+    
+    # Get the dispatcher from the updater
+    dispatcher = updater.dispatcher
+    
+    # Define the command handlers
+    start_handler = CommandHandler('start', start_handler)
+    break_handler = CommandHandler('break', break_handler)
+    resume_handler = CommandHandler('resume', resume_handler)
+    unknown_handler = MessageHandler(Filters.command, unknown_handler)
+    
+    # Add the command handlers to the dispatcher
+    dispatcher.add_handler(start_handler)
+    dispatcher.add_handler(break_handler)
+    dispatcher.add_handler(resume_handler)
+    dispatcher.add_handler(unknown_handler)
+    
+    # Define the button handler and add it to the dispatcher
+    button_handler = CallbackQueryHandler(button_handler)
+    dispatcher.add_handler(button_handler)
+    
+    # Start the bot
+    updater.start_polling()
+    
+    # Run the bot until it is stopped
+    updater.idle()
+
+# Call the main function to run the bot
+if __name__ == '__main__':
+    main()
